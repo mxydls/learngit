@@ -1,0 +1,2 @@
+This is a test to write file in Linux.
+Check out!
