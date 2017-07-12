@@ -1,0 +1,106 @@
+Binder实现分析
+Binder机制中，由一系统组件组成，分别是Client、Server、ServiceManager和Binder驱动程序，其中Client、Server和Service Manager运行在用户空间，Binder驱动程序运行内核空间。
+Client、Server、Service Manager和binder驱动四者的关系是：Client和server通过binder驱动进行通信，client向server发送请求之前需要获取到server的一些信息才能将请求发送到目标server。ServiceManager是一个特殊的server，client和server可以直接和serviceManager通信，server向serviceManager发送addService的消息，将自己注册成service，client向serviceManager发送需要获取service的名字，serviceManager返回对应service的相关信息，client获取到对应service的相关信息后就能和对应service通信了。
+ 
+
+1.	内核态binder实现
+首先介绍一下binder驱动中各进程间传递数据的方式。Binder驱动为每个用户态的client,server,smgr都分配了一个保存数据的buffer，client向server发送数据时，通过内核态binder驱动，将数据从client的用户地址拷贝到server所属的buffer，然后唤醒server一直在等待数据的线程去获取buffer中数据。
+ 
+Client已经向serviceManager查询到了server的相关信息，所以client进入binder驱动时，可以知道属于server的buff地址，通过copy_from_user将数据从用户态拷贝到内核态，然后唤醒server b的等待线程，server b 并不会将数据从内核态拷贝到自己的用户态，只会拷贝一些必须的控制信息，返回用户态，在用户态可以直接访问属于自己的那块buff。这是binder和其他ipc通信的区别所在，binder只需要进行一次内存拷贝。
+单次拷贝的原理是将物理内存进行两次映射，分别映射到用户态地址和内核态高端地址，所以内核态和用户态都可以直接访问相同物理内存。用户态进程a在打开binder驱动时，就为该进程分配好了用户态虚拟地址和内核态高端虚拟地址，当进程b要发送数据给a时，binder驱动分配相应大小的物理页面，然后将页面分别映射到进程a的用户态虚拟地址和内核态高端虚拟地址，内核态高端虚拟地址是进程a和进程b都可以使用的，进程b将数据从自己的用户态地址拷贝到对应的内核态高端虚拟地址，然后唤醒进程a，然后进程a就可以在用户态直接访问对应的数据了。
+ 
+接下来介绍一下Binder驱动中有两个非常重要的概念：binder实体和binder引用。
+1. Binder实体
+Binder实体，是各个Server以及ServiceManager在内核中的存在形式。
+Binder实体实际上是内核中binder_node结构体的对象，它的作用是在内核中保存Server和ServiceManager的信息(例如，Binder实体中保存了Server对象在用户空间的地址)。简言之，Binder实体是Server在Binder驱动中的存在形式，内核通过Binder实体可以找到用户空间的Server对象。
+在下图中，Server和ServiceManager在Binder驱动中都对应的存在一个Binder实体。
+2. Binder引用
+说到Binder实体，就不得不说"Binder引用"。所谓Binder引用，实际上是内核中binder_ref结构体的对象，它的作用是在表示"Binder实体"的引用。换句话说，每一个Binder引用都是某一个Binder实体的引用，通过Binder引用可以在内核中找到它对应的Binder实体。
+如果将Server看作是Binder实体的话，那么Client就好比Binder引用。Client要和Server通信，它就是通过保存一个Server对象的Binder引用，再通过该Binder引用在内核中找到对应的Binder实体，进而找到Server对象，然后将通信内容发送给Server对象。
+Binder实体和Binder引用都是内核(即，Binder驱动)中的数据结构。每一个Server在内核中就表现为一个Binder实体，而每一个Client则表现为一个Binder引用。这样，每个Binder引用都对应一个Binder实体，而每个Binder实体则可以多个Binder引用。
+Client、server、smgr中，binder实体和binder引用的关系如下图所示：client和server与smgr通信时，不需要具有smgr的binder引用，可以直接和smgr通信。Client和smgr与server通信时，必须具有对应server的binder引用才可以进行通信。
+Server向smgr注册自己时，会通过binder驱动创建一个server的binder实体，然后为smgr创建一个对应server的binder引用。
+Client向smgr查询某个server时，smgr通过自己对某个server的binder引用查找到server的binder实体，然后为client创建对应于server的引用。
+ 
+
+除了service manager外，client和其他server通信前必须要创建好对应的binder_ref，binder_transaction()中有如下代码，如果handle不是0，会首先查找对目标binder实体的引用，找到对应的binder引用后，通过binder引用获取到目标binder实体。
+ 
+获取到binder实体后就可以通过binder实体获取到传输需要的信息，如buffer地址：
+ 
+ 
+ 
+
+
+ 
+2.	用户态binder实现
+ 
+
+ 
+总结：
+1.	processState::self()创建并返回一个ProcessState，打开”/dev/binder”将文件描述符保存在ProcessState:: mDriverFD,并且进行mmap
+2.	ProcessState::getContextObject  new一个BpBinder(0), BpBinder表示对binder的引用，其中包含了mHandle成员保存传进来的句柄。BpBinder构造函数中会new 一个IPCThreadState()，IPCThreadState中包含了mProcess指针成员，就是等于上面new的ProcessState；IPCThreadState还包含mIn,mOut两个paser成员
+3.	new BpServiceManager(BpBinder(0))，BpServiceManager继承了BpRefBase，BpRefBase中mRemote成员保存的就是new BpBinder(0)的指针
+
+processState::self()创建并返回一个ProcessState，ProcessState的构造函数会打开”/dev/binder”将文件描述符保存在ProcessState:: mDriverFD,并且进行mmap。
+ProcessState::getContextObject返回一个BpBinder(0).
+ 
+interface_cast<IServiceManager>相当于IServiceManager::asInterface(Bpbinder(0));
+ 
+相当于
+1.	intr = static_cast<IServiceManager*>(                                                    
+2.	                    BpBinder(0)->queryLocalInterface(IServiceManager::descriptor).get());  
+3.	        if (intr == NULL) {                  
+4.	            intr = new BpServiceManager(obj);
+queryLocalInterface继承自基类IBinder，IBinder::queryLocalInterface函数位于framework/base/libs/binder/Binder.cpp文件中直接return NULL;
+所以最终相当于new BpServiceManager(BpBinder(0))
+ 
+
+ 
+总之，在client端会创建一个ProcessState, ipcThreadState, Bpxxx(如BpServiceManager), BpBinder。ProcessState->mDriverFD中保存了binder设备文件描述符，IPCThreadState->mProcess中保存了ProcessState。Bpxxx继承了BpRefBase，BpRefBase->mRemote中保存了Bpbinder的指针，Bpbinder->mHandle中保存了对service的引用句柄。在Service端会创建一个Bnxxx的本地服务，Bnxxx中重载了Bbinder中的onTransact()函数，client端向service端发送数据后，会唤醒service端，service会首先执行BBinder::transact()，然后调用BBinder::onTransact()，onTransact是被重新定义过的，所以实际会调用Bnxxx:: onTransact().
+Client和service通信时一般都是调用bpxxx (如BpServiceManager),bpxxx中定义了各种远程服务，如BpServiceManager中定义了getservice,addservice等。远程服务中会通过remote()获取到BpBinder指针，BpBinder中创建一个IPCThreadState，然后调用IPCThreadState::transact(),并将mHandle作为参数传进去。IPCThreadState::transact()调用talkWithDriver()进入内核态的binder驱动，由于知道了mHandle，也就是对方binder的引用句柄，所以进入binder驱动后，就能将数据发送给对方了。
+Client通过getservice返回一个Bpbinder，实际上就是通过binder驱动返回一个对方service的引用句柄，将句柄赋值给Bpbinder::mHandle成员；然后通过Bpbinder创建一个BpmediaPlayerService，BpmediaPlayerService定义了向service发送的请求，并且BpmediaPlayerService继承了BpRefBase，通过BpRefBase::remote()可以返回Bpbinder，所以BpmediaPlayerService向service发送时，就知道了对方service的mHandle。
+ 
+	Reply.readStrongBinder去获取返回的service句柄
+ 
+ 
+Flat_binder_object中handle成员就是引用句柄。
+ 
+用引用句柄创建一个BpBinder()
+ 
+
+3.	binder安全机制分析
+	android在selinux中添加了对binder的权限控制。
+在文件kernel/goldfish/security/selinux/include/classmap.h中定义了：
+ 
+Impersonate：该进程是否可以代表另一个进程使用binder，目前没有用到
+Call：该进程是否可以调用另一个进程
+Set_context_mgr：是否可以将自己注册成Context Manager
+Transfer：是否可以传递某类型的binder引用到其他进程
+	权限的配置在external/sepolicy/目录下的te文件中进行配置。
+在SEAndroid安全策略中，定义有一个名称为unconfineddomain的domain，它具有上述的call、set_context_mgr和transfer权限：
+ 
+ 
+ 
+相当于servicemanager 具有call transfer set_context_mgr权限。Te文件中将其他很多进程都设置成了unconfined_domain.
+在te_macros文件中定义了3个宏：binder_use, binder_call, binder_service。
+Binder_use表示进程可以使用binder。
+Binder_call表示进程1可以调用进程2
+ 
+ 
+ 
+App.te中定义了appdomain的进程可以对其他domain的进程进行调用：
+ 
+
+1、	成为smgr的进程有限制，用selinux_binder_set_context_mgr进行检测
+2、	向smgr注册时，会检查service 的name和uid，在allowed列表里存在的，才能注册。如果是root用户和system用户，可以直接注册。
+3、	一个进程向另一个进程发请求调用时，通过selinux_binder_transaction进行检查过滤
+4、	一个进程向另一个进程发送binder句柄时，通过selinux_binder_transfer_binder进行检查过滤
+5、	一个进程向另一个进程发送binder句柄时，通过selinux_binder_transfer_file进行检查过滤
+
+
+可以改进的点：
+1.	细化selinux里binder的配置。目前是配置成了所有appdomain的进程能和所有service通信，所有app包括第三方app都属于appdomain。
+a)	client只能访问需要的service
+b)	app之间不能传递引用，目前android上有出现，selinux配置里也是app和app之间可以通信，但不知道具体场景，可能和android上app分为多个activity有关，不确定ngos上是否也会有app间的binder通信。
+c)	client向smgr查询service增加权限检查。
+2.	可动态配置权限。需要结合NGOS的权限管理来实现。
