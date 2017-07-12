@@ -1,0 +1,157 @@
+/**
+ * Copyright (C) 2016 Huawei Technologies Finland Oy.
+ *
+ * This is unpublished work. See README file for more information.
+ */
+
+#ifndef LIBSEPPOCOMMON_PARCEL
+#define LIBSEPPOCOMMON_PARCEL
+
+#include <string>
+
+#include "seppo/common/Referenced.hpp"
+#include "seppo/common/Class.hpp"
+#include "seppo/common/DynamicBuffer.hpp"
+
+namespace seppo
+{
+    /**
+     * @class Parcel
+     *
+     */
+    class Parcel: public Referenced
+    {
+    public:
+        CLASS_UNCOPYABLE(Parcel)
+
+        Parcel();
+        virtual ~Parcel();
+
+        /**
+         * @brief   Writes bytes from array to Parcel.
+         *
+         * @param array Pointer to array
+         *
+         * @param size  Amount of bytes to write
+         *
+         */
+        void write(const char *array, int size);
+
+        /**
+         * @brief   Writes integer to Parcel.
+         *
+         * @param data  Integer value.
+         */
+        void write(int data);
+
+        /**
+         * @brief   Writes byte to Parcel.
+         *
+         * @param data  Byte value.
+         */
+        void write(char data);
+
+        /**
+         * @brief   Writes float value to Parcel.
+         *
+         * @param data  Float value.
+         */
+        void write(float data);
+        void write(double data);
+
+        /**
+         * @brief   Writes file descriptor to Parcel.
+         *
+         * @param fd    File descriptor.
+         */
+        void writeFd(int fd);
+
+        /**
+         * @brief   Writes string to Parcel.
+         *
+         * @param fd    File descriptor.
+         */
+        void write(const std::string& str);
+
+        void writeInt32(int val);
+        void writeDouble(double val);
+        void writeString(const std::string& str);
+        void writeFileDescriptor(int fd);
+
+        /**
+         * @brief   Reads bytes from Parcel to array.
+         *
+         * @param array Pointer to array.
+         *
+         * @param size  Amount of bytes to read.
+         *
+         */
+        void read(char *array, int size) const;
+
+        /**
+         * @brief   Reads byte from Parcel.
+         *
+         * @param value Reference to byte where data is read.
+         */
+        void read(char &value) const;
+
+        /**
+         * @brief   Reads integer from Parcel.
+         *
+         * @param value Reference to integer where data is read.
+         */
+        void read(int &value) const;
+
+        /**
+         * @brief   Reads float from Parcel.
+         *
+         * @param value Reference to float where data is read.
+         */
+        void read(float &value) const;
+        void read(double &value) const;
+
+        /**
+         * @brief   Reads file descriptor from Parcel.
+         *
+         * @param value Reference to integer where fd will be read.
+         */
+        void readFd(int &value) const;
+
+        /**
+         * @brief   Reads string from Parcel.
+         *
+         * @param value Reference to integer where fd will be read.
+         */
+        std::string read() const;
+        int readInt32() const;
+        double readDouble() const;
+        int readFileDescriptor() const;
+
+        char* data();
+        unsigned int byteSize() const;
+
+        char* fdData();
+        unsigned int fdByteSize() const;
+
+        void reserve(int size);
+        void resize(int size);
+        void resizeFd(int size);
+
+        void resetRead();
+        void setDataPosition(int pos);
+        unsigned int dataPosition();
+
+        void increaseFdOffset(int size);
+        void closeFds(bool closeFds = true);
+
+    private:
+
+        mutable unsigned int offset_;
+        mutable unsigned int fdOffset_;
+        DynamicBuffer message_;
+        DynamicBuffer control_;
+        bool closeFds_;
+    };
+}
+
+#endif
